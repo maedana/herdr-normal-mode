@@ -11,6 +11,8 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
+use std::process::{Command, Stdio};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -126,6 +128,42 @@ impl Herdr {
     /// Jump to the pane a digit named. This is the call the CLI does not offer.
     pub fn focus_pane(&self, pane_id: &str) -> bool {
         self.accepted("pane.focus", json!({"pane_id": pane_id}))
+    }
+
+    /// Hand the mode over to a fresh popup, with the cursor on `cursor_key`.
+    ///
+    /// A popup belongs to the view it was opened over: once the focus moves to
+    /// another tab or workspace it stays drawn but stops taking input. So after
+    /// every focus change this popup is dropped and a new one opened over the
+    /// view we landed in. The caller exits right after, which is what closes
+    /// this one; the opener is a detached helper in its own session, because
+    /// it has to outlive us, and it retries until herdr has let the old popup
+    /// go.
+    pub fn reopen(cursor_key: &str) {
+        const SCRIPT: &str = r#"sleep 0.05
+n=0
+while [ "$n" -lt 40 ]; do
+  "${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin "$HERDR_PLUGIN_ID" \
+    --entrypoint normal --env "HERDR_NORMAL_MODE_CURSOR=$HERDR_NORMAL_MODE_CURSOR" \
+    >/dev/null 2>&1 && exit 0
+  n=$((n + 1))
+  sleep 0.05
+done"#;
+        let mut helper = Command::new("sh");
+        helper
+            .args(["-c", SCRIPT])
+            .env("HERDR_NORMAL_MODE_CURSOR", cursor_key)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // SAFETY: `setsid` is async-signal-safe and touches no memory of ours.
+        unsafe {
+            helper.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let _ = helper.spawn();
     }
 }
 

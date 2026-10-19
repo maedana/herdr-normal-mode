@@ -149,6 +149,20 @@ impl Row {
             Row::Agent { workspace_id, .. } => workspace_id.as_deref(),
         }
     }
+
+    /// A stable name for this row, to carry the cursor across a reopen of the
+    /// popup. Ids are never reused, so the name outlives the process.
+    pub fn key(&self) -> String {
+        match self {
+            Row::Space { workspace_id } => format!("space:{workspace_id}"),
+            Row::Agent { pane_id, .. } => format!("agent:{pane_id}"),
+        }
+    }
+}
+
+/// The row a [`Row::key`] named, if it is still listed.
+pub fn row_by_key(rows: &[Row], key: &str) -> Option<usize> {
+    rows.iter().position(|row| row.key() == key)
 }
 
 /// What a keystroke means. Deliberately free of side effects: the caller owns
@@ -947,6 +961,15 @@ mod tests {
         assert_eq!(initial_cursor(&rows, Some("zz:p9"), Some("zz")), None);
         assert_eq!(initial_cursor(&rows, None, None), None);
         assert_eq!(initial_cursor(&[], Some("w9:p9P"), Some("w9")), None);
+    }
+
+    #[test]
+    fn a_row_is_found_again_by_its_key() {
+        let rows = full_rows();
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row_by_key(&rows, &row.key()), Some(index));
+        }
+        assert_eq!(row_by_key(&rows, "space:gone"), None);
     }
 
     #[test]

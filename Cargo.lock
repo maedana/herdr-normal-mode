@@ -54,6 +54,7 @@ name = "herdr-normal-mode"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "libc",
  "serde",
  "serde_json",
 ]

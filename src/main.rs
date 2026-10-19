@@ -14,7 +14,7 @@ use crossterm::terminal;
 use herdr_normal_mode::herdr::Herdr;
 use herdr_normal_mode::{
     Action, Layout, POPUP_HEIGHT, POPUP_WIDTH, PaneRef, Row, Tabs, build_rows, handle_key,
-    initial_cursor, move_cursor, pane_at, pane_in_tab, popup_rows, resolve_active_ids, tab_of_pane,
+    initial_cursor, move_cursor, pane_at, pane_in_tab, popup_rows, resolve_active_ids, row_by_key,
 };
 
 fn main() {
@@ -49,7 +49,15 @@ fn main() {
     }
 
     let mut tabs = Tabs::new(&lists.workspaces, &lists.tabs);
-    let start = initial_cursor(&rows, active_pane_id.as_deref(), active_workspace_id.as_deref());
+    // A reopen names the row it left the cursor on. It wins over the focus,
+    // which says only where the last move landed: focus on an agent would put
+    // the cursor on the agent row even when it was walking the spaces.
+    let handed_over = std::env::var("HERDR_NORMAL_MODE_CURSOR")
+        .ok()
+        .and_then(|key| row_by_key(&rows, &key));
+    let start = handed_over.or_else(|| {
+        initial_cursor(&rows, active_pane_id.as_deref(), active_workspace_id.as_deref())
+    });
     // Nothing is done with a failure. Every error `run` can return comes from
     // the terminal itself, which is the only place a report could go, and herdr
     // tears the popup down the moment we exit — so there is nowhere to say it
@@ -78,7 +86,7 @@ fn run(
     // started somewhere we could not match, so the first settle really sends a
     // focus. We never re-read herdr's own `focused` flags — following our own
     // focus changes would be a loop.
-    let mut followed = start;
+    let followed = start;
 
     // The map on screen, and the tab it is of. Drawn empty first: the layout
     // needs a round trip, and the mode row should not wait on it.
@@ -98,19 +106,9 @@ fn run(
             // died while the popup was open should be retried, not written off.
             && herdr.focus_row(&rows[cursor])
         {
-            followed = Some(cursor);
-            // Landing on an agent moves its workspace to the tab that agent is
-            // in, so the ring has to follow — `h` would otherwise step on from
-            // a tab the workspace has left, and the map would draw that tab.
-            if let Row::Agent {
-                pane_id,
-                workspace_id: Some(workspace_id),
-            } = &rows[cursor]
-                && let Some(tab_id) = tab_of_pane(panes, pane_id)
-            {
-                tabs.point_at(workspace_id, tab_id);
-            }
-            settle_map(herdr, rows, cursor, panes, tabs, &mut layout)?;
+            // The popup is replaced from here: the new one re-reads the lists,
+            // so the tab ring and the map start from where this move landed.
+            return Ok(Herdr::reopen(&rows[cursor].key()));
         }
 
         match event::read()? {
@@ -130,8 +128,9 @@ fn run(
                     // for a space that lands on the tab we stepped to.
                     if let Some(workspace_id) = rows[cursor].workspace_id()
                         && let Some(tab_id) = tabs.step(workspace_id, delta)
+                        && herdr.focus_tab(tab_id)
                     {
-                        herdr.focus_tab(tab_id);
+                        return Ok(Herdr::reopen(&rows[cursor].key()));
                     }
                     settle_map(herdr, rows, cursor, panes, tabs, &mut layout)?;
                 }
@@ -141,8 +140,9 @@ fn run(
                     // `followed` is left alone for the same reason as above.
                     if let Some(layout) = layout.as_ref()
                         && let Some(pane_id) = pane_at(layout, index)
+                        && herdr.focus_pane(pane_id)
                     {
-                        herdr.focus_pane(pane_id);
+                        return Ok(Herdr::reopen(&rows[cursor].key()));
                     }
                 }
                 Action::Quit => {
